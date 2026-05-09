@@ -14,7 +14,7 @@ GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; RESET='\033[0m'
 app_field()    { yq e ".[] | select(.name == \"$1\") | .$2" "$APPS"    | grep -v '^null$'; }
 server_field() { yq e ".[] | select(.name == \"$1\") | .$2" "$SERVERS" | grep -v '^null$'; }
 
-WEBHOOK="https://canary.discord.com/api/webhooks/1502656523040591992/HTATlwBkOLgao8Kme7wQNOZANYPz3ea569HDMX5J2ThbimdbOulKtBskAsZIbX5JZqRd"
+WEBHOOK=""
 notify() {
     [[ -z "$WEBHOOK" ]] && return
     curl -s -X POST "$WEBHOOK" \
