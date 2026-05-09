@@ -113,11 +113,12 @@ check_app() {
 case "${1:-}" in
     list)
         while IFS= read -r server; do
-            echo -e "\n${YELLOW}$server${RESET} ($(server_field "$server" ip))"
+            echo -e "\n${YELLOW}$server${RESET}"
             while IFS= read -r app; do
-                [[ "$(app_field "$app" server)" == "$server" ]] && echo "  • $app  $(app_field "$app" health_check)"
+                [[ "$(app_field "$app" server)" == "$server" ]] && \
+                    echo "  • $app  $(app_field "$app" health_check)"
             done < <(yq e '.[].name' "$APPS")
-        done < <(yq e '.[].name' "$SERVERS")
+        done < <(yq e '.[].server' "$APPS" | sort -u)
         echo
         ;;
     check)
