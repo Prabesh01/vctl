@@ -19,6 +19,7 @@ Automatically restart applications that are down accross various VPCs and get no
 ```
 
 - Enter server details in config/servers.yaml. Optional: user & key
+  > servers and keys setup is optional if it is alredy configred in system's `~/.ssh/config`
 ```
 - name: sname
   ip: x.x.x.x

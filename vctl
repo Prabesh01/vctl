@@ -56,7 +56,7 @@ check_app() {
     fi
 
     # network/dns issue — not the app's fault
-    if [[ "$curl_exit" -eq 6 || "$curl_exit" -eq 7 || "$curl_exit" -eq 28 ]]; then
+    if [[ "$curl_exit" -eq 6 || "$curl_exit" -eq 7 ]]; then
         echo -e "${YELLOW}⚠${RESET} $app — server unreachable (curl exit $curl_exit), Try later"
         return
     fi
@@ -75,7 +75,7 @@ check_app() {
     echo -e "${RED}✗${RESET} $app ($code) — restarting..."
 
     local ssh_opts="-o StrictHostKeyChecking=no -o BatchMode=yes"
-    local target="$ip"
+    local target="${ip:-$server}"
     if [[ -n "$key" ]]; then
         ssh_opts="$ssh_opts -i $KEYS/$key"
         target="$srv_user@$ip"
@@ -125,18 +125,21 @@ case "${1:-}" in
         if [[ "$target" == "all" ]]; then
             while IFS= read -r app; do check_app "$app"; done < <(yq e '.[].name' "$APPS")
 
-        elif yq e '.[].name' "$SERVERS" | grep -qx "$target"; then
-            # it's a server — check all its apps
-            while IFS= read -r app; do
-                [[ "$(app_field "$app" server)" == "$target" ]] && check_app "$app"
-            done < <(yq e '.[].name' "$APPS")
-
         elif yq e '.[].name' "$APPS" | grep -qx "$target"; then
             # it's an app
             check_app "$target"
 
         else
-            echo -e "${RED}✗${RESET} '$target': No such server or app is registered in config"
+            mapfile -t server_apps < <(yq e '.[].name' "$APPS" | while IFS= read -r app; do
+                [[ "$(app_field "$app" server)" == "$target" ]] && echo "$app"
+            done)
+
+            if [[ "${#server_apps[@]}" -eq 0 ]]; then
+                echo -e "${YELLOW}⚠${RESET} no apps registered for server '$target'"
+            else
+                echo -e "checking ${#server_apps[@]} app(s) on '$target'..."
+                for app in "${server_apps[@]}"; do check_app "$app"; done
+            fi
         fi
         ;;
     *)
