@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# vctl — check health and restart if down
+# deps: yq, curl, ssh
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+APPS="$SCRIPT_DIR/configs/apps.yaml"
+SERVERS="$SCRIPT_DIR/configs/servers.yaml"
+KEYS="$SCRIPT_DIR/keys"
+STATE_DIR="$SCRIPT_DIR/.state"
+mkdir -p "$STATE_DIR"
+
+GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; RESET='\033[0m'
+
+app_field()    { yq e ".[] | select(.name == \"$1\") | .$2" "$APPS"    | grep -v '^null$'; }
+server_field() { yq e ".[] | select(.name == \"$1\") | .$2" "$SERVERS" | grep -v '^null$'; }
+
+WEBHOOK="https://canary.discord.com/api/webhooks/1502656523040591992/HTATlwBkOLgao8Kme7wQNOZANYPz3ea569HDMX5J2ThbimdbOulKtBskAsZIbX5JZqRd"
+notify() {
+    [[ -z "$WEBHOOK" ]] && return
+    curl -s -X POST "$WEBHOOK" \
+        -H "Content-Type: application/json" \
+        -d "{\"content\": \"$1\"}" &>/dev/null
+}
+
+check_app() {
+    local app=$1
+
+    # bail early if app not found
+    local server=$(app_field "$app" server)
+    [[ -z "$server" ]] && { echo -e "${RED}✗${RESET} app '$app' not found in config"; return 1; }
+
+    local url=$(app_field "$app" health_check)
+    local command=$(app_field "$app" command)
+    local server=$(app_field "$app" server)
+    local ip=$(server_field "$server" ip)
+    local srv_user=$(server_field "$server" user)
+    local app_user=$(app_field "$app" user)
+    # local user=$(app_field "$app" user); [[ -z "$user" ]] && user=$(server_field "$server" user); [[ -z "$user" ]] && user="ubuntu"
+    local key=$(server_field "$server" key)
+    local path=$(app_field "$app" path)
+
+    local code
+    local curl_exit
+    code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url") 
+    # 2>/dev/null || echo "000")
+    curl_exit=$?
+
+    if [[ "$code" -ge 200 && "$code" -lt 400 ]]; then
+        # notify recovery: it was down last time but now its up
+        if [[ -f "$STATE_DIR/$app" ]]; then
+            rm "$STATE_DIR/$app"
+            notify "✅ **[$app](<$url>)** is back up"
+        fi
+        echo -e "${GREEN}✓${RESET} $app ($code)"
+        return
+    fi
+
+    # network/dns issue — not the app's fault
+    if [[ "$curl_exit" -eq 6 || "$curl_exit" -eq 7 || "$curl_exit" -eq 28 ]]; then
+        echo -e "${YELLOW}⚠${RESET} $app — server unreachable (curl exit $curl_exit), Try later"
+        return
+    fi
+
+    # if ! ping -c 1 -W 3 "$ip" &>/dev/null; then
+    #     echo -e "${YELLOW}⚠${RESET} $app — server '$server' unreachable, Try later"
+    #     return
+    # fi
+
+    # it wasn't down during lst run, hence to state file. but no it is down.
+    if [[ ! -f "$STATE_DIR/$app" ]]; then
+        touch "$STATE_DIR/$app"
+        notify "🔴 **[$app](<$url>)** is down ($code)!"
+    fi
+
+    echo -e "${RED}✗${RESET} $app ($code) — restarting..."
+
+    local ssh_opts="-o StrictHostKeyChecking=no -o BatchMode=yes"
+    local target="$ip"
+    if [[ -n "$key" ]]; then
+        ssh_opts="$ssh_opts -i $KEYS/$key"
+        target="$srv_user@$ip"
+    fi
+
+    local cmd=""
+    [[ -n "$path" ]] && cmd="cd $path && "
+    cmd+="$command"
+
+    [[ -n "$app_user" ]] && cmd="sudo su - $app_user -c 'cd $path && $command'"
+    # local cmd=""; [[ -n "$path" ]] && cmd="cd $path && "; cmd+="$command"
+
+    ssh $ssh_opts "$target" "$cmd" \
+        && echo -e "  ${GREEN}↑ done${RESET}" \
+        || echo -e "  ${RED}✗ failed${RESET}"
+
+    echo -e "  ${YELLOW}↑ waiting for app...${RESET}"
+    sleep 10
+
+    local new_code
+    new_code=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "$url")
+
+    if [[ "$new_code" -ge 200 && "$new_code" -lt 400 ]]; then
+        echo -e "  ${GREEN}✓ back up!${RESET}"
+        if [[ -f "$STATE_DIR/$app" ]]; then
+            rm "$STATE_DIR/$app"
+            notify "✅ **[$app](<$url>)** is back up"
+        fi
+        echo -e "✅ $app was down, restarted and is back up"
+    else
+        echo -e "  ${RED}✗ still down ($new_code)${RESET}"
+    fi
+}
+
+case "${1:-}" in
+    list)
+        while IFS= read -r server; do
+            echo -e "\n${YELLOW}$server${RESET} ($(server_field "$server" ip))"
+            while IFS= read -r app; do
+                [[ "$(app_field "$app" server)" == "$server" ]] && echo "  • $app  $(app_field "$app" health_check)"
+            done < <(yq e '.[].name' "$APPS")
+        done < <(yq e '.[].name' "$SERVERS")
+        echo
+        ;;
+    check)
+        target=${2:-all}
+        if [[ "$target" == "all" ]]; then
+            while IFS= read -r app; do check_app "$app"; done < <(yq e '.[].name' "$APPS")
+
+        elif yq e '.[].name' "$SERVERS" | grep -qx "$target"; then
+            # it's a server — check all its apps
+            while IFS= read -r app; do
+                [[ "$(app_field "$app" server)" == "$target" ]] && check_app "$app"
+            done < <(yq e '.[].name' "$APPS")
+
+        elif yq e '.[].name' "$APPS" | grep -qx "$target"; then
+            # it's an app
+            check_app "$target"
+
+        else
+            echo -e "${RED}✗${RESET} '$target': No such server or app is registered in config"
+        fi
+        ;;
+    *)
+        echo "usage: vctl list"
+        echo "       vctl check <Optional: app_name or server_name, skip to check all apps>"
+        ;;
+esac
