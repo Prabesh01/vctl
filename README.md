@@ -46,3 +46,8 @@ Automatically restart applications that are down accross various VPCs and get no
 - `./vctl check`: check status of all the apps and restart if down.
 - `./vctl check app_name`: check only specific app
 - `./vctl check server_name`: check all apps in a server
+
+### Tips
+- To add a public key to authorized keys of multiple servers at once, setup pssh and then:
+`pssh -h ~/.pssh/yag -i 'echo "<public_key_here>" | sudo tee -a /home/deploy/.ssh/authorized_keys > /dev/null'`
+
